@@ -10,16 +10,19 @@ flip `sim_gazebo` off.
 
 | File / dir | Purpose |
 |---|---|
-| `urdf/ur5_hande.urdf.xacro` | Top-level model — UR5 + Hand-E (with built-in coupler), single `gz_ros2_control` plugin |
-| `srdf/ur5_hande.srdf.xacro` | MoveIt SRDF — extends `ur_manipulator` group, adds `gripper` end-effector group, disables collisions on adjacent Hand-E links |
-| `config/ur5_hande_controllers.yaml` | `joint_state_broadcaster` + `scaled_joint_trajectory_controller` (arm) + `hande_gripper_controller` (Hand-E) |
+| `urdf/ur5_hande.urdf.xacro` | Sim model — UR5 + Hand-E with built-in coupler, single `gz_ros2_control` plugin |
+| `urdf/ur5_hande_real.urdf.xacro` | Real-hw model — same kinematics, uses `ur_robot_driver` + Modbus Hand-E plugins |
+| `srdf/ur5_hande.srdf.xacro` | MoveIt SRDF — extends `ur_manipulator` group, adds `gripper` end-effector, disables collisions on adjacent Hand-E links |
+| `config/ur5_hande_controllers.yaml` | Sim controllers: `joint_state_broadcaster` + `scaled_joint_trajectory_controller` + `hande_gripper_controller` |
+| `config/ur5_hande_real_controllers.yaml` | Real-hw controllers: full UR stack (GPIO, speed scaling, F/T, TCP pose, force mode, freedrive, passthrough) + Hand-E |
 | `config/kinematics.yaml` | TRAC-IK with `solve_type: Distance` — predictable IK, no random wrist flips |
 | `launch/ur5_hande_gz.launch.py` | Spawns Gazebo, model, controllers, optionally MoveIt |
-| `launch/ur5_hande_moveit.launch.py` | MoveIt 2 with our SRDF + kinematics override |
+| `launch/ur5_hande_real.launch.py` | Real-hw bring-up: control_node, dashboard, urscript_interface, controller_stopper, tool_comm, spawners, optional MoveIt |
+| `launch/ur5_hande_moveit.launch.py` | MoveIt 2 with our SRDF + kinematics override (used by both sim and real launches) |
 | `patches/01-add-sim-gazebo-arg.patch` | Adds `sim_gazebo:=true` branch (`gz_ros2_control/GazeboSimSystem`) to the upstream Hand-E description |
 | `setup.sh` | One-shot: apt deps + clone Hand-E repos + apply patches |
 | `run_sim.sh` | Local launch wrapper — strips snap-leaked env vars (VS Code terminal etc.) so RViz/Gazebo don't crash on glibc mismatch |
-| `Dockerfile` + `run_docker.sh` | Containerized full stack |
+| `Dockerfile` + `run_docker.sh` | Containerized full stack (sim only — driver isn't built in the image) |
 
 ## Requirements
 
@@ -104,17 +107,218 @@ Position is in **meters**, range `[0.0, 0.025]` per finger (50 mm total stroke).
 - **From the CLI**: send a `FollowJointTrajectory` goal to `/scaled_joint_trajectory_controller/follow_joint_trajectory`.
 - **From code**: use `moveit_py` or `moveit_ros_planning_interface`.
 
-## Real Hand-E hardware
+## Real hardware (sim → real)
 
-The driver isn't built by default. When you're ready:
+> ⚠ **Status: not yet validated on a physical robot.**
+>
+> What's been tested:
+> - Sim path (Gazebo, MoveIt, gripper action) end-to-end ✅
+> - The real-hw launch (`ur5_hande_real.launch.py`) has been **dry-run with
+>   `use_mock_hardware:=true`** — all 14 controllers load, the controller_manager
+>   stands up, the URDF parses, the gripper action server registers ✅
+>
+> What hasn't been tested:
+> - Connecting to an actual UR controller over RTDE/URScript
+> - The Hand-E Modbus path through the UR tool I/O + `socat`
+> - Calibration extraction
+> - Sending real motion commands to a physical arm
+>
+> If you're the first to plug this into hardware, expect to debug. Read the
+> [first-run checklist](#first-run-checklist) below carefully. Open an issue (or
+> PR) with whatever you hit.
+
+The same workspace drives the physical lab arm. There's a dedicated launch:
+`ur5_hande_real.launch.py`. It uses the same merged controllers (so anything
+written against the sim — MoveIt plans, gripper actions, scripted trajectories —
+runs unchanged) but swaps the hardware plugins:
+
+| | Sim | Real |
+|---|---|---|
+| Arm | `gz_ros2_control/GazeboSimSystem` | `ur_robot_driver/URPositionHardwareInterface` (RTDE/URScript over TCP) |
+| Gripper | `gz_ros2_control/GazeboSimSystem` | `robotiq_hande_driver/RobotiqHandeHardwareInterface` (Modbus RTU through UR tool I/O via `socat`) |
+| Helpers | none | UR dashboard client, controller_stopper, urscript_interface, robot_state_helper, tool_communication |
+
+### One-time prep on the robot
+
+1. **Install `externalcontrol-x.x.x.urcap`** on the teach pendant.
+   Download from
+   [Universal_Robots_ROS2_Driver/ur_robot_driver/resources](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver/tree/jazzy/ur_robot_driver/resources)
+   onto a USB stick → on the pendant: *Setup Robot → URCaps → +* → install.
+2. **Set up the External Control program** on the pendant: create a new program
+   that consists of just the `External Control` URCap node. Set the host IP to
+   the IP of the workstation running ROS. Save it.
+3. **Set robot to Remote Control** mode (top-right menu on the pendant).
+4. **Wire the Hand-E** through the UR tool I/O — 24V, GND, RS-485 A/B. With
+   `use_tool_communication:=true` (the default), `ur_robot_driver` opens a TCP
+   socket that `socat` pipes to `/tmp/ttyUR`, and `robotiq_hande_driver` Modbus-RTU's
+   over that pseudo-tty. No external USB-RS485 dongle needed.
+
+### Calibration (do this once per arm)
+
+The default UR5 kinematics in `ur_description` are nominal — your TCP frame can
+be off by ~mm. Pull the actual numbers from the controller:
 
 ```bash
-sudo apt install -y libmodbus-dev socat ros-jazzy-gripper-controllers
-cd ~/ur5_ws
-colcon build --symlink-install --packages-select robotiq_hande_driver
+ros2 launch ur_calibration calibration_correction.launch.py \
+    robot_ip:=<UR-IP> \
+    target_filename:="$HOME/ur5_calibration.yaml"
 ```
 
-Then in `urdf/ur5_hande.urdf.xacro` flip `sim_gazebo:=false` (and adjust the `tty_port` / `socat_*` params to match your tool I/O), and launch without Gazebo.
+Pass the resulting YAML on every real launch (`kinematics_params_file:=...`).
+
+### Network
+
+ROS workstation and UR controller on the same subnet. Confirm:
+
+```bash
+ping <UR-IP>
+nc -zv <UR-IP> 29999    # dashboard server
+```
+
+### Launch
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ur5_ws/install/setup.bash
+
+ros2 launch ur5_hande_bringup ur5_hande_real.launch.py \
+    robot_ip:=192.168.1.102 \
+    kinematics_params_file:=$HOME/ur5_calibration.yaml \
+    ur_type:=ur5
+```
+
+Then **on the teach pendant** press **Play** on the External Control program.
+Once it's running, ROS controllers go active and you can plan in MoveIt RViz the
+same way as in sim.
+
+### Useful flags
+
+```bash
+launch_moveit:=false                    # skip MoveIt
+launch_rviz:=false                      # no RViz (still spawns Gazebo's, on real-hw there is none)
+use_mock_hardware:=true                 # dry-run the real-hw launch without an actual robot —
+                                        #   verifies wiring, URDF, and controllers without needing the lab
+use_tool_communication:=false           # Hand-E NOT wired through tool I/O (e.g. external RS-485 dongle —
+                                        #   then also set tool_device_name:=/dev/ttyUSB0 or similar)
+tool_voltage:=0                         # do not power the tool (default is 24V for Hand-E)
+ur_type:=ur5e                           # e-Series instead of CB-series
+```
+
+### Verify everything is talking
+
+In another terminal:
+
+```bash
+source /opt/ros/jazzy/setup.bash && source ~/ur5_ws/install/setup.bash
+
+ros2 control list_controllers          # all 7+ controllers should be active or inactive
+ros2 topic echo /joint_states          # arm joints + robotiq_hande_left_finger_joint
+ros2 topic echo /ft_data               # 6-axis F/T from the wrist
+ros2 topic echo /tcp_pose              # tool0 in base frame
+
+# Open the Hand-E
+ros2 action send_goal /hande_gripper_controller/gripper_cmd \
+    control_msgs/action/ParallelGripperCommand \
+    "{command: {name: ['robotiq_hande_left_finger_joint'], position: [0.025]}}"
+```
+
+### First-run checklist
+
+Plug into the real arm in *this order*. If any step fails, fix it before moving on.
+
+1. **Dry-run first, no hardware.** Confirm the launch is healthy on your
+   workstation independent of the robot:
+   ```bash
+   ros2 launch ur5_hande_bringup ur5_hande_real.launch.py \
+       robot_ip:=192.168.1.102 \
+       use_mock_hardware:=true \
+       launch_dashboard_client:=false \
+       use_tool_communication:=false \
+       launch_rviz:=false launch_moveit:=false
+   ```
+   Expected: 14 controllers loaded (7 active + 7 inactive), no plugin-load errors,
+   `/hande_gripper_controller/gripper_cmd` action present. If this fails, the
+   real run definitely won't work — fix the build / deps first.
+
+2. **Network reachable.** `ping <UR-IP>` from the workstation. `nc -zv <UR-IP> 29999`
+   should connect to the dashboard server. If those don't work, no ROS launch will.
+
+3. **URCap installed and program ready.** On the teach pendant: *Setup Robot →
+   URCaps* should list `External Control`. Open or create a program containing
+   only the `External Control` URCap node, set the host IP to the workstation,
+   save it, and **load** it. Don't press Play yet.
+
+4. **Robot in Remote Control.** Top-right menu on the pendant → *Remote Control*.
+   Without this, `ur_robot_driver` can't push URScript.
+
+5. **Hand-E powered.** Tool flange connector wired to the gripper:
+   - Pin 1 (24V) → gripper VDC
+   - Pin 2 (0V) → gripper GND
+   - Pin 4 (RS-485 A) → gripper RS-485+
+   - Pin 6 (RS-485 B) → gripper RS-485−
+
+   Verify with the pendant: *Installation → General → Tool I/O → set Tool Output
+   to 24V*, the Hand-E LED should come on.
+
+6. **Calibration extracted** (skip first time if you only want a no-load motion test):
+   ```bash
+   ros2 launch ur_calibration calibration_correction.launch.py \
+       robot_ip:=<UR-IP> target_filename:=$HOME/ur5_calibration.yaml
+   ```
+   Without this, expect ~mm-level TCP offset.
+
+7. **Launch.** With **only the arm** first (skip the gripper Modbus path on the
+   very first try, ratchet up complexity gradually):
+   ```bash
+   ros2 launch ur5_hande_bringup ur5_hande_real.launch.py \
+       robot_ip:=<UR-IP> \
+       kinematics_params_file:=$HOME/ur5_calibration.yaml \
+       use_tool_communication:=false \
+       tool_voltage:=0
+   ```
+   Then **press Play** on the External Control program on the pendant.
+   Expected: `External Control` URCap turns green, controller_manager logs
+   "Successful 'activate' of hardware 'ur5'", `/joint_states` reports the actual
+   arm pose.
+
+8. **Test arm motion** with a tiny goal in RViz before adding the gripper —
+   prove the URScript pipeline works.
+
+9. **Add the gripper.** Re-launch with `use_tool_communication:=true tool_voltage:=24`
+   (the defaults). The Hand-E driver will spin up `socat` against `/tmp/ttyUR`
+   and do Modbus auto-init. Send an open command; if Modbus times out, check
+   the slave ID (we use `9` per Hand-E factory default — change in `ur5_hande_real.urdf.xacro`
+   if your gripper is set to a different ID).
+
+### Known unknowns when going live
+
+These are areas where the published config is "best-guess from documentation"
+and may need tuning on your specific lab arm:
+
+- **Modbus slave_id = 9** in `ur5_hande_real.urdf.xacro`. Hand-E factory default
+  is 9; verify with Robotiq User Manual or by querying the gripper.
+- **`tool_voltage = 24`** — default for Hand-E. **0** is safer for first plug-in
+  (won't fry anything if wiring is wrong); only enable 24V after you've verified
+  pinout.
+- **`tool_baud_rate = 115200`** — Hand-E ships at this rate. Some lab grippers
+  may have been reconfigured; you'd see Modbus framing errors.
+- **`headless_mode = false`** — leave as-is unless you can't run the External
+  Control URCap (e.g. no pendant available). Headless mode bypasses the URCap
+  but loses some safety integration.
+- **`safety_limits = true`** — leave on. Prevents the planner from generating
+  motions outside the safety zone the pendant has configured.
+
+### What's still UR-specific in the real-hw config
+
+`io_and_status_controller`, `speed_scaling_state_broadcaster`,
+`force_torque_sensor_broadcaster`, `tcp_pose_broadcaster`, `ur_configuration_controller`
+are all real-UR-only state broadcasters. They're loaded but spawned automatically
+by the real launch — they don't appear in the sim launch because Gazebo's
+hardware plugin doesn't expose those interfaces.
+
+`scaled_joint_trajectory_controller` works in both. On real hardware it honors
+the speed-scaling slider on the pendant; in sim the `speed_scaling_interface_name`
+is empty so it acts like a regular `JointTrajectoryController`.
 
 ## Known limitations
 

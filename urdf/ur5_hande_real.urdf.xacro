@@ -1,0 +1,139 @@
+<?xml version="1.0"?>
+<!--
+  Real-hardware top-level for UR5 + Robotiq Hand-E.
+
+  Differences vs ur5_hande.urdf.xacro (sim):
+  - Uses ur_robot_driver's ros2_control xacro (URPositionHardwareInterface plugin
+    talking to the real UR controller over the RTDE/URScript protocol on robot_ip).
+  - Hand-E macro is called with sim_gazebo=false / use_fake_hardware=false, which
+    selects the robotiq_hande_driver/RobotiqHandeHardwareInterface plugin (Modbus
+    over the UR tool I/O serial port via socat tunnel).
+  - No ground plane or Gazebo plugin.
+
+  Calibration: the kinematic params YAML extracted from the real arm via
+  `ros2 launch ur_calibration calibration_correction.launch.py robot_ip:=... target_filename:=...`
+  should be passed via the kinematics_params arg.
+-->
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
+  <xacro:arg name="name" default="ur5_hande"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_robot_driver)/urdf/ur.ros2_control.xacro"/>
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_transmissions.xacro"/>
+  <xacro:include filename="$(find robotiq_hande_description)/urdf/robotiq_hande_gripper.xacro"/>
+
+  <xacro:arg name="ur_type" default="ur5"/>
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_limit_params"
+             default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params"
+             default="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params"
+             default="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params"
+             default="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"/>
+  <xacro:arg name="transmission_hw_interface" default=""/>
+  <xacro:arg name="safety_limits" default="false"/>
+  <xacro:arg name="safety_pos_margin" default="0.15"/>
+  <xacro:arg name="safety_k_position" default="20"/>
+
+  <!-- UR driver runtime parameters -->
+  <xacro:arg name="headless_mode" default="false"/>
+  <xacro:arg name="robot_ip" default="0.0.0.0"/>
+  <xacro:arg name="script_filename" default=""/>
+  <xacro:arg name="output_recipe_filename" default=""/>
+  <xacro:arg name="input_recipe_filename" default=""/>
+  <xacro:arg name="reverse_ip" default="0.0.0.0"/>
+  <xacro:arg name="script_command_port" default="50004"/>
+  <xacro:arg name="reverse_port" default="50001"/>
+  <xacro:arg name="script_sender_port" default="50002"/>
+  <xacro:arg name="trajectory_port" default="50003"/>
+
+  <!-- UR tool I/O communication (we tunnel Hand-E Modbus through this) -->
+  <xacro:arg name="use_tool_communication" default="true"/>
+  <xacro:arg name="tool_voltage" default="24"/>          <!-- 24V on the tool to power the gripper -->
+  <xacro:arg name="tool_parity" default="0"/>
+  <xacro:arg name="tool_baud_rate" default="115200"/>
+  <xacro:arg name="tool_stop_bits" default="1"/>
+  <xacro:arg name="tool_rx_idle_chars" default="1.5"/>
+  <xacro:arg name="tool_tx_idle_chars" default="3.5"/>
+  <xacro:arg name="tool_device_name" default="/tmp/ttyUR"/>
+  <xacro:arg name="tool_tcp_port" default="54321"/>
+
+  <!-- Driver fall-back to mock hardware (for dry-running real-hw launch w/o a robot) -->
+  <xacro:arg name="use_mock_hardware" default="false"/>
+  <xacro:arg name="mock_sensor_commands" default="false"/>
+  <xacro:arg name="initial_positions_file" default="$(find ur_description)/config/initial_positions.yaml"/>
+  <xacro:property name="initial_positions_file" default="$(arg initial_positions_file)"/>
+
+  <link name="world"/>
+
+  <!-- ============== UR5 arm ============== -->
+  <xacro:ur_robot
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(arg joint_limit_params)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    physical_parameters_file="$(arg physical_params)"
+    visual_parameters_file="$(arg visual_params)"
+    safety_limits="$(arg safety_limits)"
+    safety_pos_margin="$(arg safety_pos_margin)"
+    safety_k_position="$(arg safety_k_position)">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- arm <ros2_control> block (real UR driver plugin) -->
+  <xacro:ur_ros2_control
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    transmission_hw_interface="$(arg transmission_hw_interface)"
+    use_mock_hardware="$(arg use_mock_hardware)"
+    mock_sensor_commands="$(arg mock_sensor_commands)"
+    headless_mode="$(arg headless_mode)"
+    initial_positions="${xacro.load_yaml(initial_positions_file)}"
+    use_tool_communication="$(arg use_tool_communication)"
+    tool_voltage="$(arg tool_voltage)"
+    tool_parity="$(arg tool_parity)"
+    tool_baud_rate="$(arg tool_baud_rate)"
+    tool_stop_bits="$(arg tool_stop_bits)"
+    tool_rx_idle_chars="$(arg tool_rx_idle_chars)"
+    tool_tx_idle_chars="$(arg tool_tx_idle_chars)"
+    tool_device_name="$(arg tool_device_name)"
+    tool_tcp_port="$(arg tool_tcp_port)"
+    robot_ip="$(arg robot_ip)"
+    script_filename="$(arg script_filename)"
+    output_recipe_filename="$(arg output_recipe_filename)"
+    input_recipe_filename="$(arg input_recipe_filename)"
+    reverse_ip="$(arg reverse_ip)"
+    script_command_port="$(arg script_command_port)"
+    reverse_port="$(arg reverse_port)"
+    script_sender_port="$(arg script_sender_port)"
+    trajectory_port="$(arg trajectory_port)"/>
+
+  <!-- ============== Robotiq Hand-E gripper =============
+       use_mock_hardware=true   => Hand-E uses mock_components/GenericSystem too
+                                  (lets you dry-run the real-hw launch without the
+                                  Modbus driver built — useful for CI / smoke tests).
+       use_mock_hardware=false  => sim_gazebo=false, use_fake_hardware=false
+                                  => robotiq_hande_driver/RobotiqHandeHardwareInterface
+                                  (Modbus RTU through socat-tunneled tool I/O). -->
+  <xacro:robotiq_hande_gripper
+    name="RobotiqHandeHardwareInterface"
+    prefix="$(arg tf_prefix)"
+    parent="$(arg tf_prefix)tool0"
+    grip_pos_min="0.0"
+    grip_pos_max="0.025"
+    tty_port="$(arg tool_device_name)"
+    baudrate="$(arg tool_baud_rate)"
+    parity="N"
+    data_bits="8"
+    stop_bit="$(arg tool_stop_bits)"
+    slave_id="9"
+    use_fake_hardware="$(arg use_mock_hardware)"
+    sim_gazebo="false"
+    create_socat_tty="false"
+    socat_ip_address="0.0.0.0"
+    socat_port="$(arg tool_tcp_port)"/>
+</robot>

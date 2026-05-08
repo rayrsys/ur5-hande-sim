@@ -1,0 +1,46 @@
+diff --git a/urdf/robotiq_hande_gripper.ros2_control.xacro b/urdf/robotiq_hande_gripper.ros2_control.xacro
+index 5fda327..491d571 100644
+--- a/urdf/robotiq_hande_gripper.ros2_control.xacro
++++ b/urdf/robotiq_hande_gripper.ros2_control.xacro
+@@ -2,15 +2,19 @@
+ <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+   <xacro:macro
+     name="robotiq_hande_ros2_control"
+-    params="name prefix grip_pos_min grip_pos_max tty_port baudrate parity data_bits stop_bit slave_id frequency_hz create_socat_tty socat_ip_address socat_port use_fake_hardware"
++    params="name prefix grip_pos_min grip_pos_max tty_port baudrate parity data_bits stop_bit slave_id frequency_hz create_socat_tty socat_ip_address socat_port use_fake_hardware sim_gazebo:=false"
+   >
+     <ros2_control name="${name}" type="system">
+       <hardware>
++        <xacro:if value="${sim_gazebo}">
++          <plugin>gz_ros2_control/GazeboSimSystem</plugin>
++        </xacro:if>
++
+         <xacro:if value="${use_fake_hardware}">
+           <plugin>mock_components/GenericSystem</plugin>
+         </xacro:if>
+ 
+-        <xacro:unless value="${use_fake_hardware}">
++        <xacro:unless value="${use_fake_hardware or sim_gazebo}">
+           <plugin>robotiq_hande_driver/RobotiqHandeHardwareInterface</plugin>
+           <param name="grip_pos_min">${grip_pos_min}</param>
+           <param name="grip_pos_max">${grip_pos_max}</param>
+diff --git a/urdf/robotiq_hande_gripper.xacro b/urdf/robotiq_hande_gripper.xacro
+index 8ce2b5f..9da2c0e 100644
+--- a/urdf/robotiq_hande_gripper.xacro
++++ b/urdf/robotiq_hande_gripper.xacro
+@@ -21,6 +21,7 @@
+             stop_bit
+             slave_id
+             use_fake_hardware
++            sim_gazebo:=false
+             frequency_hz:=10
+             create_socat_tty:=false
+             socat_ip_address:=192.168.100.10
+@@ -46,6 +47,7 @@
+       socat_ip_address="${socat_ip_address}"
+       socat_port="${socat_port}"
+       use_fake_hardware="${use_fake_hardware}"
++      sim_gazebo="${sim_gazebo}"
+     />
+ 
+     <!-- Robotiq Hand-E specs -->

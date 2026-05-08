@@ -1,0 +1,11 @@
+repositories:
+  # Pinned to the exact commits the patches/ apply against. Bump as needed,
+  # then re-test that patches still apply (re-run setup.sh).
+  robotiq_hande_description:
+    type: git
+    url: https://github.com/macmacal/robotiq_hande_description.git
+    version: 5ae8b97068f8a1136d37dd476b72bafc2b1cdfb0
+  robotiq_hande_driver:
+    type: git
+    url: https://github.com/AGH-CEAI/robotiq_hande_driver.git
+    version: 9f07f7ba883f25fddde87c26ff4bec8d6c83a676
